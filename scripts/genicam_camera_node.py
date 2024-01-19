@@ -39,28 +39,271 @@ class GenicamCameraNode:
     DRIVER_SPECIALIZATION_CONSTRUCTORS = {GENICAM_GENERIC_DRIVER_ID: GenicamCamDriver}
 
     def __init__(self):
-        pass # TODO
+        rospy.loginfo(f"Starting {self.DEFAULT_NODE_NAME}")
+        rospy.init_node(self.DEFAULT_NODE_NAME)
+        self.node_name = rospy.get_name().split("/")[-1]
+
+        model = rospy.get_param("~model", default=None)
+        serial_number = rospy.get_param("~serial_number", default=None)
+
+        # NOTE: In idx_sensor_mgr.py we have to prefix serial_number with "sn" so that it's treated
+        #       as a string parameter. Otherwise it's treated automatically as an int and it can
+        #       (does) overflow.
+        serial_number = serial_number[2:]
+
+        # TODO: add support for other GenTL producers?
+
+        self.driver_id = rospy.get_param("~driver_id", GENICAM_GENERIC_DRIVER_ID)
+        rospy.set_param("~driver_id", self.driver_id)
+        if self.driver_id not in self.DRIVER_SPECIALIZATION_CONSTRUCTORS:
+            rospy.logerr(f"{self.node_name}: unknown driver_id {self.driver_id}")
+            return
+        DriverConstructor = self.DRIVER_SPECIALIZATION_CONSTRUCTORS[self.driver_id]
+
+        rospy.loginfo(f"{self.node_name}: Launching {self.driver_id} driver")
+        try:
+            self.driver = DriverConstructor(model=model, serial_number=serial_number)
+        except Exception as e:
+            rospy.logerr(f"{self.node_name}: Failed to instantiate driver - ({e})")
+            sys.exit(-1)
+
+        if not self.driver.isConnected():
+            rospy.logerr(f"{self.node_name}: Failed to connect to camera device")
+
+        rospy.loginfo(f"{self.node_name}: ... Connected!")
+
+        self.createResolutionModeMapping()
+        self.createFramerateModeMapping()
+
+        idx_callback_names = {
+            "Controls": {
+                "Resolution": self.setResolutionMode\
+                        if self.driver.hasAdjustableResolution()\
+                        else None,
+                "Framerate": self.setFramerateMode\
+                        if self.driver.hasAdjustableFramerate()\
+                        else None,
+                "Contrast": None,
+                "Brightness": None,
+                "Thresholding": None,
+                "Range": None,
+            },
+            "Data": {
+                "Color2DImg": self.getColorImg,
+                "StopColor2DImg": self.stopColorImg,
+                "BW2DImg": self.getBWImg,
+                "StopBW2DImg": self.stopBWImg,
+                "DepthMap": None,  # TODO?
+                "StopDepthMap": None,  # TODO?
+                "DepthImg": None,  # TODO?
+                "StopDepthImg": None,  # TODO?
+                "Pointcloud": None,  # TODO?
+                "StopPointcloud": None,  # TODO?
+                "PointcloudImg": None,  # TODO?
+                "StopPointcloudImg": None,  # TODO?
+            }
+        }
+
+        # IDX Remappings: TODO?
+
+        self.img_lock = threading.Lock()
+        self.color_image_acquisition_running = False
+        self.bw_image_acquisition_running = False
+        self.cached_2d_color_frame = None
+        self.cached_2d_color_frame_timestamp = None
+
+        rospy.loginfo(f"{self.node_name}: Launching NEPI IDX (ROS) interface...")
+        self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
+                setResolutionModeCb=idx_callback_names["Controls"]["Resolution"],
+                setFramerateModeCb=idx_callback_names["Controls"]["Framerate"],
+                setContrastCb=idx_callback_names["Controls"]["Contrast"],
+                setBrightnessCb=idx_callback_names["Controls"]["Brightness"],
+                setThresholdingCb=idx_callback_names["Controls"]["Thresholding"],
+                setRangeCb=idx_callback_names["Controls"]["Range"],
+                getColor2DImgCb=idx_callback_names["Data"]["Color2DImg"],
+                stopColor2DImgAcquisitionCb=idx_callback_names["Data"]["StopColor2DImg"],
+                getGrayscale2DImgCb=idx_callback_names["Data"]["BW2DImg"],
+                stopGrayscale2DImgAcquisitionCb=idx_callback_names["Data"]["StopBW2DImg"],
+                getDepthMapCb=idx_callback_names["Data"]["DepthMap"],
+                stopDepthMapAcquisitionCb=idx_callback_names["Data"]["StopDepthMap"],
+                getDepthImgCb=idx_callback_names["Data"]["DepthImg"],
+                stopDepthImgAcquisitionCb=idx_callback_names["Data"]["StopDepthImg"],
+                getPointcloudCb=idx_callback_names["Data"]["Pointcloud"],
+                stopPointcloudAcquisitionCb=idx_callback_names["Data"]["StopPointcloud"],
+                getPointcloudImgCb=idx_callback_names["Data"]["PointcloudImg"],
+                stopPointcloudImgAcquisitionCb=idx_callback_names["Data"]["StopPointcloudImg"])
+        rospy.loginfo(f"{self.node_name}: ... IDX interface running")
+
+        self.logDeviceInfo()
+
+        self.idx_if.updateFromParamServer()
+
+        rospy.spin()
 
     def logDeviceInfo(self):
-        pass # TODO
+        device_info_str = f"{self.node_name} info:\n"\
+                + f"\tModel: {self.driver.model}\n"\
+                + f"\tS/N: {self.driver.serial_number}\n"
+
+        scalable_cam_controls = self.driver.getAvailableScaledCameraControls()
+        discrete_cam_controls = self.driver.getAvailableDiscreteCameraControls()
+        device_info_str += "\tCamera Controls:\n"
+        for ctl in scalable_cam_controls:
+            device_info_str += f"\t\t{ctl}\n"
+        for ctl in discrete_cam_controls:
+            device_info_str += f"\t\t{ctl}: {discrete_cam_controls[ctl]}\n"
+
+        _, fmt = self.driver.getCurrentFormat()
+        device_info_str += f"\tCamera Output Format: {fmt}\n"
+
+        _, res_dict = self.driver.getCurrentResolution()
+        device_info_str += "\tCurrent Resolution: " + f'{res_dict["width"]}x{res_dict["height"]}' + "\n"
+
+        if (self.driver.hasAdjustableResolution()):
+            _, available_resolutions = self.driver.getCurrentFormatAvailableResolutions()
+            device_info_str += "\tAvailable Resolutions:\n"
+            for res in available_resolutions:
+                device_info_str += "\t\t" + f'{res["width"]}x{res["height"]}' + "\n"
+
+        if (self.driver.hasAdjustableFramerate()):
+            _, available_framerates = self.driver.getCurrentResolutionAvailableFramerates()
+            device_info_str += "\t" + f'Available Framerates (current resolution): {available_framerates}' + "\n"
+
+        device_info_str += "\tResolution Modes:\n"
+        for mode in self.resolution_mode_map:
+            device_info_str += "\t\t"\
+                    + f'{mode}: {self.resolution_mode_map[mode]["width"]}x{self.resolution_mode_map[mode]["height"]}'\
+                    + "\n"
+
+        device_info_str += "\tFramerate Modes (current resolution):\n"
+        for mode in self.framerate_mode_map:
+            device_info_str += f"\t\t{mode}: {self.framerate_mode_map[mode]}\n"
+
+        rospy.loginfo(device_info_str)
 
     def createResolutionModeMapping(self):
-        pass # TODO
+        _, available_resolutions = self.driver.getCurrentFormatAvailableResolutions()
+        available_resolution_count = len(available_resolutions)
+        # Check if this camera supports resolution adjustment
+        if (available_resolution_count == 0):
+            self.resolution_mode_map = {}
+            return
+
+        #available_resolutions is a list of dicts, sorted by "width" from smallest to largest
+        # Distribute the modes evenly
+        resolution_mode_count = ROSIDXSensorIF.RESOLUTION_MODE_MAX + 1
+        # Ensure the highest resolution is available as "Ultra", others are spread evenly amongst remaining options
+        self.resolution_mode_map = {resolution_mode_count - 1:available_resolutions[available_resolution_count - 1]}
+
+        resolution_step = int(math.floor(available_resolution_count / resolution_mode_count))
+        if resolution_step == 0:
+            resolution_step = 1
+
+        for i in range(1,resolution_mode_count):
+            res_index = (available_resolution_count - 1) - (i*resolution_step)
+            if res_index < 0:
+                res_index = 0
+            self.resolution_mode_map[resolution_mode_count - i - 1] = available_resolutions[res_index]
 
     def createFramerateModeMapping(self):
-        pass # TODO
+        _, available_framerates = self.driver.getCurrentResolutionAvailableFramerates()
+
+        available_framerate_count = len(available_framerates)
+        if (available_framerate_count == 0):
+            self.framerate_mode_map = {}
+            return
+
+        #rospy.loginfo("Debug: Creating Framerate Mode Mapping")
+
+        framerate_mode_count = ROSIDXSensorIF.FRAMERATE_MODE_MAX + 1
+        # Ensure the highest framerate is available as "Ultra", others are spread evenly amongst remaining options
+        self.framerate_mode_map = {framerate_mode_count - 1: available_framerates[available_framerate_count - 1]}
+
+        framerate_step = int(math.floor(available_framerate_count / framerate_mode_count))
+        if framerate_step == 0:
+            framerate_step = 1
+
+        for i in range(1, framerate_mode_count):
+            framerate_index = (available_framerate_count - 1) - (i*framerate_step)
+            if framerate_index < 0:
+                framerate_index = 0
+            self.framerate_mode_map[framerate_mode_count - i - 1] = available_framerates[framerate_index]
 
     def setResolutionMode(self, mode):
-        pass # TODO
+        if (mode >= len(self.resolution_mode_map)):
+            return False, "Invalid mode value"
+
+        resolution_dict = self.resolution_mode_map[mode]
+        rospy.loginfo(self.node_name + ": setting driver resolution to " + str(resolution_dict['width']) + 'x' + str(resolution_dict['height']))
+        status, msg = self.driver.setResolution(resolution_dict)
+        if status is not False:
+            # Need to update the framerate mode mapping in accordance with new resolution
+            # And also restore the current framerate "mode" after the mapping
+            current_framerate_mode = rospy.get_param('~framerate_mode', ROSIDXSensorIF.RESOLUTION_MODE_MAX)
+            self.createFramerateModeMapping()
+            self.setFramerateMode(current_framerate_mode)
+
+        return status, msg
     
     def setFramerateMode(self, mode):
-        pass # TODO
+        if (mode >= len(self.framerate_mode_map)):
+            return False, "Invalid mode value"
+
+        fps = self.framerate_mode_map[mode]
+        rospy.loginfo(self.node_name + ": setting driver framerate to " + str(fps))
+        return self.driver.setFramerate(self.framerate_mode_map[mode])
+
+    def setDriverCameraControl(self, control_name, value):
+        # Don't log too fast -- slider bars, etc. can cause this to get called many times in a row
+        #rospy.loginfo_throttle(1.0, self.node_name + ": updating driver camera control " + control_name)
+        return self.driver.setScaledCameraControl(control_name, value)
     
     def getColorImg(self):
-        pass # TODO
+        self.img_lock.acquire()
+        # Always try to start image acquisition -- no big deal if it was already started; driver returns quickly
+        ret, msg = self.driver.startImageAcquisition()
+        if ret is False:
+            self.img_lock.release()
+            return ret, msg, None, None
+
+        self.color_image_acquisition_running = True
+
+        timestamp = None
+
+        start = time.time()
+        frame, timestamp, ret, msg = self.driver.getImage()
+        stop = time.time()
+        #print('GI: ', stop - start)
+        if ret is False:
+            self.img_lock.release()
+            return ret, msg, None, None
+
+        if timestamp is not None:
+            ros_timestamp = rospy.Time.from_sec(timestamp)
+        else:
+            ros_timestamp = rospy.Time.now()
+
+        # Make a copy for the bw thread to use rather than grabbing a new frame
+        if self.bw_image_acquisition_running:
+            self.cached_2d_color_frame = frame
+            self.cached_2d_color_frame_timestamp = ros_timestamp
+
+        self.img_lock.release()
+        return ret, msg, frame, ros_timestamp
     
     def stopColorImg(self):
-        pass # TODO
+        self.img_lock.acquire()
+        # Don't stop acquisition if the b/w image is still being requested
+        if self.bw_image_acquisition_running is False:
+            ret,msg = self.driver.stopImageAcquisition()
+        else:
+            ret = True
+            msg = "Success"
+        self.color_image_acquisition_running = False
+        self.cached_2d_color_frame = None
+        self.cached_2d_color_frame_timestamp = None
+        self.img_lock.release()
+        return ret,msg
     
     def getBWImg(self):
         pass # TODO

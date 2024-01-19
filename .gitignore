@@ -48,3 +48,6 @@ Thumbs.db
 *.mov
 *.wmv
 
+# Vim swap files
+*.swp
+*.swo
