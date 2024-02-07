@@ -25,7 +25,7 @@ Contact Information:
 
 TODO: adapt this to genicam
 
-# nepi_edge_sdk_genicam#
+# nepi_edge_sdk_genicam #
 This repository hosts code and support files related to the NEPI integration of Video for Linux (genicam)-supported cameras.
 
 ### Build and Install ###
