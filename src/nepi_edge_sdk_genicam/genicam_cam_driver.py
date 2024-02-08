@@ -48,10 +48,8 @@ def DBG_PRINT(*args, **kwargs):
 GENICAM_GENERIC_DRIVER_ID = 'GenericGenicam'
 
 DEFAULT_GENTL_PATHS = [
-        "/home/nepi/Downloads/Baumer_GAPI_SDK_2.14.1_lin_aarch64_cpp/lib/libbgapi2_gige.cti.2.14.1",
-        "/home/nepi/Downloads/Baumer_GAPI_SDK_2.14.1_lin_aarch64_cpp/lib/libbgapi2_usb.cti.2.14.1",
-        #"/opt/spinnaker/lib/flir-gentl/FLIR_GenTL.cti",
-        #"/opt/ImpactAcquire/lib/arm64/mvGenTLProducer.cti",
+    '/opt/baumer/gentl_producers/libbgapi2_usb.cti.2.14.1',
+    '/opt/baumer/gentl_producers/libbgapi2_gige.cti.2.14.1'
 ]
 DEFAULT_CAPTURE_TIMEOUT_S = 1
 
