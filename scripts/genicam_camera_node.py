@@ -39,8 +39,8 @@ class GenicamCameraNode:
     DRIVER_SPECIALIZATION_CONSTRUCTORS = {GENICAM_GENERIC_DRIVER_ID: GenicamCamDriver}
 
     def __init__(self):
-        rospy.loginfo(f"Starting {self.DEFAULT_NODE_NAME}")
         rospy.init_node(self.DEFAULT_NODE_NAME)
+        rospy.loginfo(f"Starting {rospy.get_name()}")
         self.node_name = rospy.get_name().split("/")[-1]
 
         model = rospy.get_param("~model", default=None)
@@ -60,9 +60,13 @@ class GenicamCameraNode:
             return
         DriverConstructor = self.DRIVER_SPECIALIZATION_CONSTRUCTORS[self.driver_id]
 
+        # Establish any user-defined parameters mappings from config file. These are of the form
+        #    {""}
+        genicam_cfg_file_mappings = rospy.get_param("~genicam_mappings", {})
+        
         rospy.loginfo(f"{self.node_name}: Launching {self.driver_id} driver")
         try:
-            self.driver = DriverConstructor(model=model, serial_number=serial_number)
+            self.driver = DriverConstructor(model=model, serial_number=serial_number, param_mapping_overrides=genicam_cfg_file_mappings)
         except Exception as e:
             rospy.logerr(f"{self.node_name}: Failed to instantiate driver - ({e})")
             sys.exit(-1)
@@ -83,9 +87,15 @@ class GenicamCameraNode:
                 "Framerate": self.setFramerateMode\
                         if self.driver.hasAdjustableFramerate()\
                         else None,
-                "Contrast": None,
-                "Brightness": None,
-                "Thresholding": None,
+                "Contrast": self.setContrastRatio\
+                        if self.driver.hasAdjustableRatioSetting("contrast")\
+                        else None,
+                "Brightness": self.setBrightnessRatio\
+                        if self.driver.hasAdjustableRatioSetting("brightness")\
+                        else None,
+                "Thresholding": self.setThresholdingRatio\
+                        if self.driver.hasAdjustableRatioSetting("thresholding")\
+                        else None,                
                 "Range": None,
             },
             "Data": {
@@ -104,7 +114,7 @@ class GenicamCameraNode:
             }
         }
 
-        # IDX Remappings: TODO?
+        # IDX Remappings: Not necessary since we have a separate mechanism for genicam parameter assignment
 
         self.img_lock = threading.Lock()
         self.color_image_acquisition_running = False
@@ -252,12 +262,23 @@ class GenicamCameraNode:
         fps = self.framerate_mode_map[mode]
         rospy.loginfo(self.node_name + ": setting driver framerate to " + str(fps))
         return self.driver.setFramerate(self.framerate_mode_map[mode])
-
-    def setDriverCameraControl(self, control_name, value):
-        # Don't log too fast -- slider bars, etc. can cause this to get called many times in a row
-        #rospy.loginfo_throttle(1.0, self.node_name + ": updating driver camera control " + control_name)
-        return self.driver.setScaledCameraControl(control_name, value)
     
+    def setRatioParameter(self, param_name, ratio):
+        if (ratio < 0.0) or (ratio > 1.0):
+            return False, f"Invalid {param_name} ratio {ratio}"
+        
+        rospy.loginfo(self.node_name + ": Setting %s ratio to %0.2f", param_name, ratio)
+        return self.driver.setScaledControl(param_name, ratio)
+    
+    def setContrastRatio(self, contrast_ratio):
+        return self.setRatioParameter("contrast", contrast_ratio)
+    
+    def setBrightnessRatio(self, brightness_ratio):
+        return self.setRatioParameter("brightness", brightness_ratio)
+    
+    def setThresholdingRatio(self, thresholding_ratio):
+        return self.setRatioParameter("thresholding", thresholding_ratio)     
+
     def getColorImg(self):
         self.img_lock.acquire()
         # Always try to start image acquisition -- no big deal if it was already started; driver returns quickly
