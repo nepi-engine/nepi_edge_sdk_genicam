@@ -29,8 +29,9 @@ def DBG_PRINT(*args, **kwargs):
     print_func = rospy.logfatal if DBG_ROS else print
     print_func(*args, **kwargs)
 
+################### Genicam Driver Configuration #########################
+##########################################################################
 GENICAM_GENERIC_DRIVER_ID = 'GenericGenicam'
-
 GENICAM_IDS_UEYE_DRIVER_ID = 'IDS_uEye'
 GENICAM_FLIR_BLACKFLY_S_DRIVER_ID = 'FLIR_Blackfly_S'
 
@@ -38,6 +39,55 @@ DEFAULT_GENTL_PATHS = [
     '/opt/baumer/gentl_producers/libbgapi2_usb.cti.2.14.1',
     '/opt/baumer/gentl_producers/libbgapi2_gige.cti.2.14.1'
 ]
+
+MODEL_TO_DRIVER_MAPPING = {
+    "GV-528xFA-C" : GENICAM_IDS_UEYE_DRIVER_ID,
+    "U3-328xCP-C" : GENICAM_IDS_UEYE_DRIVER_ID,
+    "Blackfly S BFS-PGE-31S4C" : GENICAM_FLIR_BLACKFLY_S_DRIVER_ID,
+}
+
+# This collection of parameter dictionaries provides per-device differentiation of IDX settings
+# Parent can override these values by passing in a dictionary to this class's constructor as the 
+# param_mapping_overrides arg
+GENICAM_PARAM_MAPPING = {
+    GENICAM_GENERIC_DRIVER_ID : {
+        "contrast" : {
+            "genicam_name" : "BlackLevel",
+            "inverted" : False
+        },
+        "brightness" : {
+            "genicam_name" : "Gamma",
+            "inverted" : True
+        },
+    },
+    GENICAM_IDS_UEYE_DRIVER_ID : {
+        "contrast" : {
+            "genicam_name" : "BlackLevel",
+            "inverted" : False
+        },
+        "brightness" : {
+            "genicam_name" : "Gamma",
+            "inverted" : False,
+        },
+        "thresholding" : {
+            "genicam_name" : "Gain",
+            "inverted" : False
+        }
+    },
+    GENICAM_FLIR_BLACKFLY_S_DRIVER_ID : {
+        "contrast" : {
+            "genicam_name" : "BlackLevel",
+            "inverted" : False
+        },
+        # Using gamma for brightness is leading to a hazy image for Blackfly, so disabled by default for now
+        #"brightness" : {
+        #    "genicam_name" : "Gamma",
+        #    "inverted" : True
+        #},
+    },
+}
+##########################################################################
+
 DEFAULT_CAPTURE_TIMEOUT_S = 1
 
 class GenicamCamDriver(object):
@@ -53,53 +103,6 @@ class GenicamCamDriver(object):
             genicam.genapi.IString: "string",
     }
 
-    MODEL_TO_DRIVER_MAPPING = {
-        "GV-528xFA-C" : GENICAM_IDS_UEYE_DRIVER_ID,
-        "U3-328xCP-C" : GENICAM_IDS_UEYE_DRIVER_ID,
-        "Blackfly S BFS-PGE-31S4C" : GENICAM_FLIR_BLACKFLY_S_DRIVER_ID,
-    }
-
-    # This collection of parameter dictionaries provides per-device differentiation of IDX settings
-    # Parent can override these values by passing in a dictionary to this class's constructor as the 
-    # param_mapping_overrides arg
-    # TODO: Maybe break this out into a separate file for easy modification?
-    GENICAM_PARAM_MAPPING = {
-        GENICAM_GENERIC_DRIVER_ID : {
-            "contrast" : {
-                "genicam_name" : "BlackLevel",
-                "inverted" : False
-            },
-            "brightness" : {
-                "genicam_name" : "Gamma",
-                "inverted" : True
-            },
-        },
-        GENICAM_IDS_UEYE_DRIVER_ID : {
-            "contrast" : {
-                "genicam_name" : "BlackLevel",
-                "inverted" : False
-            },
-            "brightness" : {
-                "genicam_name" : "Gamma",
-                "inverted" : False,
-            },
-            "thresholding" : {
-                "genicam_name" : "Gain",
-                "inverted" : False
-            }
-        },
-        GENICAM_FLIR_BLACKFLY_S_DRIVER_ID : {
-            "contrast" : {
-                "genicam_name" : "BlackLevel",
-                "inverted" : False
-            },
-            "brightness" : {
-                "genicam_name" : "Gamma",
-                "inverted" : True
-            },
-        },
-    }
-
     def __init__(self, model=None, serial_number=None, harvester=None, gentl_paths=DEFAULT_GENTL_PATHS, param_mapping_overrides={}):
         self.model = model
         self.serial_number = serial_number
@@ -110,8 +113,8 @@ class GenicamCamDriver(object):
         self.resolution = None
         
         # Grab the right parameter mapping based on model name
-        driver_id = GENICAM_GENERIC_DRIVER_ID if model not in self.MODEL_TO_DRIVER_MAPPING else self.MODEL_TO_DRIVER_MAPPING[model]
-        self.param_mapping = self.GENICAM_PARAM_MAPPING[driver_id]
+        driver_id = GENICAM_GENERIC_DRIVER_ID if model not in MODEL_TO_DRIVER_MAPPING else MODEL_TO_DRIVER_MAPPING[model]
+        self.param_mapping = GENICAM_PARAM_MAPPING[driver_id]
         # And apply overrides
         for key in param_mapping_overrides:
             self.param_mapping[key] = param_mapping_overrides[key]
