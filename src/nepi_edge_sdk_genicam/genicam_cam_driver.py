@@ -562,19 +562,22 @@ class GenicamCamDriver(object):
         image = buf.payload.components[0]
         frame = deepcopy(image.data)
         frame.resize((image.height, image.width))
+        #print(f"DEBUG: Original img = {image.width}x{image.height}")
 
         # Reque the buffer so that it can be used again.
         buf.queue()
 
-        # Convert to RGB and resize. Note that resolution is tracked by the
+        # Convert to BGR and resize. Note that resolution is tracked by the
         # driver and does not necessarily use the values of the Height and
         # Width nodes. This is because those nodes select the range of pixels
         # to return from the sensor, not the pixel pitch.
-        frame = cv2.cvtColor(frame, cv2.COLOR_BayerBG2RGB)
-        if frame.shape != (self.resolution["width"], self.resolution["height"]):
+        frame = cv2.cvtColor(frame, cv2.COLOR_BayerBG2BGR)
+        desired_width = self.resolution["width"]
+        desired_height = self.resolution["height"]
+        if (image.height != desired_height) or (image.width != desired_width):
             frame = cv2.resize(
                     src=frame,
-                    dsize=(self.resolution["width"], self.resolution["height"]),
+                    dsize=(desired_width, desired_height),
                     interpolation=cv2.INTER_AREA,
             )
 
