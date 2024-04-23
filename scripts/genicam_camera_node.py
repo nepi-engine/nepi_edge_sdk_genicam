@@ -311,11 +311,58 @@ class GenicamCameraNode:
         return ret,msg
     
     def getBWImg(self):
-        pass # TODO
+        self.img_lock.acquire()
+        # Always try to start image acquisition -- no big deal if it was already started; driver returns quickly
+        ret, msg = self.driver.startImageAcquisition()
+        if ret is False:
+            self.img_lock.release()
+            return ret, msg, None, None
+        
+        self.bw_image_acquisition_running = True
+
+        ros_timestamp = None
+        
+        # Only grab a frame if we don't already have a cached color frame... avoids cutting the update rate in half when
+        # both image streams are running
+        if self.color_image_acquisition_running is False or self.cached_2d_color_frame is None:
+            #rospy.logwarn("Debugging: getBWImg acquiring")
+            frame, timestamp, ret, msg = self.driver.getImage()
+            if timestamp is not None:
+                ros_timestamp = rospy.Time.from_sec(timestamp)
+            else:
+                ros_timestamp = rospy.Time.now()
+        else:
+            #rospy.logwarn("Debugging: getBWImg reusing")
+            frame = self.cached_2d_color_frame.copy()
+            ros_timestamp = self.cached_2d_color_frame_timestamp
+            self.cached_2d_color_frame = None # Clear it to avoid using it multiple times in the event that threads are running at different rates
+            self.cached_2d_color_frame_timestamp = None
+            ret = True
+            msg = "Success: Reusing cached frame"
+
+        self.img_lock.release()
+
+        # Abort if there was some error or issue in acquiring the image
+        if ret is False or frame is None:
+            return False, msg, None, None
+
+        # Fix the channel count if necessary
+        if frame.ndim == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        return ret, msg, frame, ros_timestamp
     
     def stopBWImg(self):
-        pass # TODO
-
+        self.img_lock.acquire()
+        # Don't stop acquisition if the color image is still being requested
+        if self.color_image_acquisition_running is False:
+            ret,msg = self.driver.stopImageAcquisition()
+        else:
+            ret = True
+            msg = "Success"
+        self.bw_image_acquisition_running = False
+        self.img_lock.release()
+        return ret, msg
         
 if __name__ == '__main__':
     node = GenicamCameraNode()
