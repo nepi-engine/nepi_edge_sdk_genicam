@@ -17,8 +17,32 @@ import cv2
 from nepi_edge_sdk_base.idx_sensor_if import ROSIDXSensorIF
 from nepi_edge_sdk_genicam.genicam_cam_driver import GENICAM_GENERIC_DRIVER_ID, GenicamCamDriver
 
+from nepi_edge_sdk_base import nepi_img
+from nepi_edge_sdk_base import nepi_nex
+
 class GenicamCameraNode:
     DEFAULT_NODE_NAME = "genicam_camera_node"
+
+   FACTORY_SETTINGS = nepi_nex.TEST_SETTINGS
+
+    #Factory Control Values 
+    FACTORY_CONTROLS = dict( controls_enable = True,
+    auto_adjust = False,
+    brightness_ratio = 0.5,
+    contrast_ratio =  0.5,
+    threshold_ratio =  0.0,
+    resolution_mode = 3, # LOW, MED, HIGH, MAX
+    framerate_mode = 3, # LOW, MED, HIGH, MAX
+    start_range_ratio = None, 
+    stop_range_ratio = None,
+    min_range_m = None,
+    max_range_m = None,
+    zoom_ratio = None, 
+    rotate_ratio = None,
+    frame_id = None
+    )
+ 
+    DEFAULT_CURRENT_FPS = 20 # Will be update later with actual
 
     DRIVER_SPECIALIZATION_CONSTRUCTORS = {GENICAM_GENERIC_DRIVER_ID: GenicamCamDriver}
 
@@ -64,37 +88,36 @@ class GenicamCameraNode:
         self.createFramerateModeMapping()
 
         idx_callback_names = {
-            "Controls": {
-                "Resolution": self.setResolutionMode\
-                        if self.driver.hasAdjustableResolution()\
-                        else None,
-                "Framerate": self.setFramerateMode\
-                        if self.driver.hasAdjustableFramerate()\
-                        else None,
-                "Contrast": self.setContrastRatio\
-                        if self.driver.hasAdjustableRatioSetting("contrast")\
-                        else None,
-                "Brightness": self.setBrightnessRatio\
-                        if self.driver.hasAdjustableRatioSetting("brightness")\
-                        else None,
-                "Thresholding": self.setThresholdingRatio\
-                        if self.driver.hasAdjustableRatioSetting("thresholding")\
-                        else None,                
-                "Range": None,
+            "Controls" : {
+                # IDX Standard
+                "Controls_Enable":  self.setControlsEnable,
+                "Auto_Adjust":  self.setAutoAdjust,
+                "Brightness": self.setBrightness,
+                "Contrast":  self.setContrast,
+                "Thresholding": self.setThresholding,
+                "Resolution": self.setResolutionMode,
+                "Framerate":  self.setFramerateMode,
+                "Range":  None
             },
-            "Data": {
+            
+
+            "Data" : {
+                # Data callbacks
                 "Color2DImg": self.getColorImg,
                 "StopColor2DImg": self.stopColorImg,
                 "BW2DImg": self.getBWImg,
                 "StopBW2DImg": self.stopBWImg,
-                "DepthMap": None,  # TODO?
-                "StopDepthMap": None,  # TODO?
-                "DepthImg": None,  # TODO?
-                "StopDepthImg": None,  # TODO?
-                "Pointcloud": None,  # TODO?
-                "StopPointcloud": None,  # TODO?
-                "PointcloudImg": None,  # TODO?
-                "StopPointcloudImg": None,  # TODO?
+                "DepthMap": None, 
+                "StopDepthMap": None,
+                "DepthImg": None, 
+                "StopDepthImg": None,
+                "Pointcloud": None, 
+                "StopPointcloud": None,
+                "PointcloudImg": None, 
+                "StopPointcloudImg": None,
+                "GPS": None,
+                "Odom": None,
+                "Heading": None,
             }
         }
 
@@ -106,27 +129,50 @@ class GenicamCameraNode:
         self.cached_2d_color_frame = None
         self.cached_2d_color_frame_timestamp = None
 
-        rospy.loginfo(f"{self.node_name}: Launching NEPI IDX (ROS) interface...")
+        # Initialize controls
+        self.factory_controls = self.FACTORY_CONTROLS
+        self.current_controls = self.factory_controls # Updateded during initialization
+        self.current_fps = self.DEFAULT_CURRENT_FPS # Should be updateded when settings read
+
+        # Initialize settings
+        self.caps_settings = nepi_nex.TEST_CAP_SETTINGS 
+        self.factory_settings = self.FACTORY_SETTINGS
+        self.current_settings = [] # Updated 
+        for setting in self.factory_settings:
+          self.settingsUpdateFunction(setting)
+          
+        # Launch the IDX interface --  this takes care of initializing all the camera settings from config. file
+        rospy.loginfo(self.node_name + ": Launching NEPI IDX (ROS) interface...")
         self.idx_if = ROSIDXSensorIF(sensor_name=self.node_name,
-                setResolutionModeCb=idx_callback_names["Controls"]["Resolution"],
-                setFramerateModeCb=idx_callback_names["Controls"]["Framerate"],
-                setContrastCb=idx_callback_names["Controls"]["Contrast"],
-                setBrightnessCb=idx_callback_names["Controls"]["Brightness"],
-                setThresholdingCb=idx_callback_names["Controls"]["Thresholding"],
-                setRangeCb=idx_callback_names["Controls"]["Range"],
-                getColor2DImgCb=idx_callback_names["Data"]["Color2DImg"],
-                stopColor2DImgAcquisitionCb=idx_callback_names["Data"]["StopColor2DImg"],
-                getGrayscale2DImgCb=idx_callback_names["Data"]["BW2DImg"],
-                stopGrayscale2DImgAcquisitionCb=idx_callback_names["Data"]["StopBW2DImg"],
-                getDepthMapCb=idx_callback_names["Data"]["DepthMap"],
-                stopDepthMapAcquisitionCb=idx_callback_names["Data"]["StopDepthMap"],
-                getDepthImgCb=idx_callback_names["Data"]["DepthImg"],
-                stopDepthImgAcquisitionCb=idx_callback_names["Data"]["StopDepthImg"],
-                getPointcloudCb=idx_callback_names["Data"]["Pointcloud"],
-                stopPointcloudAcquisitionCb=idx_callback_names["Data"]["StopPointcloud"],
-                getPointcloudImgCb=idx_callback_names["Data"]["PointcloudImg"],
-                stopPointcloudImgAcquisitionCb=idx_callback_names["Data"]["StopPointcloudImg"])
-        rospy.loginfo(f"{self.node_name}: ... IDX interface running")
+                                     capSettings = self.caps_settings,
+                                     factorySettings = self.factory_settings,
+                                     settingsUpdateFunction=self.settingsUpdateFunction,
+                                     getSettings=self.getSettings,
+                                     factoryControls = self.FACTORY_CONTROLS,
+                                     setControlsEnable = idx_callback_names["Controls"]["Controls_Enable"],
+                                     setAutoAdjust= idx_callback_names["Controls"]["Auto_Adjust"],
+                                     setResolutionMode=idx_callback_names["Controls"]["Resolution"], 
+                                     setFramerateMode=idx_callback_names["Controls"]["Framerate"], 
+                                     setContrast=idx_callback_names["Controls"]["Contrast"], 
+                                     setBrightness=idx_callback_names["Controls"]["Brightness"], 
+                                     setThresholding=idx_callback_names["Controls"]["Thresholding"], 
+                                     setRange=idx_callback_names["Controls"]["Range"], 
+                                     getColor2DImg=idx_callback_names["Data"]["Color2DImg"], 
+                                     stopColor2DImgAcquisition=idx_callback_names["Data"]["StopColor2DImg"],
+                                     getBW2DImg=idx_callback_names["Data"]["BW2DImg"], 
+                                     stopBW2DImgAcquisition=idx_callback_names["Data"]["StopBW2DImg"],
+                                     getDepthMap=idx_callback_names["Data"]["DepthMap"], 
+                                     stopDepthMapAcquisition=idx_callback_names["Data"]["StopDepthMap"],
+                                     getDepthImg=idx_callback_names["Data"]["DepthImg"], 
+                                     stopDepthImgAcquisition=idx_callback_names["Data"]["StopDepthImg"],
+                                     getPointcloud=idx_callback_names["Data"]["Pointcloud"], 
+                                     stopPointcloudAcquisition=idx_callback_names["Data"]["StopPointcloud"],
+                                     getPointcloudImg=idx_callback_names["Data"]["PointcloudImg"], 
+                                     stopPointcloudImgAcquisition=idx_callback_names["Data"]["StopPointcloudImg"],
+                                     getGPSMsg=idx_callback_names["Data"]["GPS"],
+                                     getOdomMsg=idx_callback_names["Data"]["Odom"],
+                                     getHeadingMsg=idx_callback_names["Data"]["Heading"])
+        rospy.loginfo(self.node_name + ": ... IDX interface running")
 
         self.logDeviceInfo()
 
@@ -175,93 +221,95 @@ class GenicamCameraNode:
 
         rospy.loginfo(device_info_str)
 
-    def createResolutionModeMapping(self):
-        _, available_resolutions = self.driver.getCurrentFormatAvailableResolutions()
-        available_resolution_count = len(available_resolutions)
-        # Check if this camera supports resolution adjustment
-        if (available_resolution_count == 0):
-            self.resolution_mode_map = {}
-            return
+    def getCapSettings(self):
+        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
+        # Replace with get cap settings process
+        return cap_settings
 
-        #available_resolutions is a list of dicts, sorted by "width" from smallest to largest
-        # Distribute the modes evenly
-        resolution_mode_count = ROSIDXSensorIF.RESOLUTION_MODE_MAX + 1
-        # Ensure the highest resolution is available as "Ultra", others are spread evenly amongst remaining options
-        self.resolution_mode_map = {resolution_mode_count - 1:available_resolutions[available_resolution_count - 1]}
+    def settingsUpdateFunction(self,setting):
+        success = False
+        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
+        success = True
+        return success
+    
+    def getSettings(self):
+        settings = self.current_settings
+        # Replace with get settings process
+        return settings
 
-        resolution_step = int(math.floor(available_resolution_count / resolution_mode_count))
-        if resolution_step == 0:
-            resolution_step = 1
+    def getCapSettings(self):
+        cap_settings = nepi_nex.TEST_CAP_SETTINGS #.NONE_SETTINGS
+        # Replace with get cap settings process
+        return cap_settings
 
-        for i in range(1,resolution_mode_count):
-            res_index = (available_resolution_count - 1) - (i*resolution_step)
-            if res_index < 0:
-                res_index = 0
-            self.resolution_mode_map[resolution_mode_count - i - 1] = available_resolutions[res_index]
+    def settingsUpdateFunction(self,setting):
+        success = False
+        self.current_settings = nepi_nex.update_setting_in_settings(setting,self.current_settings)
+        success = True
+        return success
+    
+    def getSettings(self):
+        settings = self.current_settings
+        # Replace with get settings process
+        return settings
+    
+    def setControlsEnable(self, enable):
+        self.current_controls["controls_enable"] = enable
+        status = True
+        err_str = ""
+        return status, err_str
+        
+    def setAutoAdjust(self, enable):
+        ret = self.current_controls["auto_adjust"] = enable
+        status = True
+        err_str = ""
+        return status, err_str
 
-    def createFramerateModeMapping(self):
-        _, available_framerates = self.driver.getCurrentResolutionAvailableFramerates()
+    def setBrightness(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["brightness_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
 
-        available_framerate_count = len(available_framerates)
-        if (available_framerate_count == 0):
-            self.framerate_mode_map = {}
-            return
+    def setContrast(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["contrast_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
 
-        #rospy.loginfo("Debug: Creating Framerate Mode Mapping")
-
-        framerate_mode_count = ROSIDXSensorIF.FRAMERATE_MODE_MAX + 1
-        # Ensure the highest framerate is available as "Ultra", others are spread evenly amongst remaining options
-        self.framerate_mode_map = {framerate_mode_count - 1: available_framerates[available_framerate_count - 1]}
-
-        framerate_step = int(math.floor(available_framerate_count / framerate_mode_count))
-        if framerate_step == 0:
-            framerate_step = 1
-
-        for i in range(1, framerate_mode_count):
-            framerate_index = (available_framerate_count - 1) - (i*framerate_step)
-            if framerate_index < 0:
-                framerate_index = 0
-            self.framerate_mode_map[framerate_mode_count - i - 1] = available_framerates[framerate_index]
+    def setThresholding(self, ratio):
+        if ratio > 1:
+            ratio = 1
+        elif ratio < 0:
+            ratio = 0
+        self.current_controls["threshold_ratio"] = ratio
+        status = True
+        err_str = ""
+        return status, err_str
 
     def setResolutionMode(self, mode):
-        if (mode >= len(self.resolution_mode_map)):
+        if (mode > self.idx_if.RESOLUTION_MODE_MAX):
             return False, "Invalid mode value"
-
-        resolution_dict = self.resolution_mode_map[mode]
-        rospy.loginfo(self.node_name + ": setting driver resolution to " + str(resolution_dict['width']) + 'x' + str(resolution_dict['height']))
-        status, msg = self.driver.setResolution(resolution_dict)
-        if status is not False:
-            # Need to update the framerate mode mapping in accordance with new resolution
-            # And also restore the current framerate "mode" after the mapping
-            current_framerate_mode = rospy.get_param('~framerate_mode', ROSIDXSensorIF.RESOLUTION_MODE_MAX)
-            self.createFramerateModeMapping()
-            self.setFramerateMode(current_framerate_mode)
-
-        return status, msg
+        self.current_controls["resolution_mode"] = mode
+        status = True
+        err_str = ""
+        return status, err_str
     
     def setFramerateMode(self, mode):
-        if (mode >= len(self.framerate_mode_map)):
+        if (mode > self.idx_if.FRAMERATE_MODE_MAX):
             return False, "Invalid mode value"
-
-        fps = self.framerate_mode_map[mode]
-        rospy.loginfo(self.node_name + ": setting driver framerate to " + str(fps))
-        return self.driver.setFramerate(self.framerate_mode_map[mode])
-    
-    def setRatioParameter(self, param_name, ratio):
-        if (ratio < 0.0) or (ratio > 1.0):
-            return False, f"Invalid {param_name} ratio {ratio}"
-        
-        rospy.loginfo(self.node_name + ": Setting %s ratio to %0.2f", param_name, ratio)
-        return self.driver.setScaledControl(param_name, ratio)
-    
-    def setContrastRatio(self, contrast_ratio):
-        return self.setRatioParameter("contrast", contrast_ratio)
-    
-    def setBrightnessRatio(self, brightness_ratio):
-        return self.setRatioParameter("brightness", brightness_ratio)
-    
-    def setThresholdingRatio(self, thresholding_ratio):
-        return self.setRatioParameter("thresholding", thresholding_ratio)     
+        self.current_controls["framerate_mode"] = mode
+        status = True
+        err_str = ""
+        return status, err_str
 
     def getColorImg(self):
         self.img_lock.acquire()
@@ -276,7 +324,7 @@ class GenicamCameraNode:
         timestamp = None
 
         start = time.time()
-        frame, timestamp, ret, msg = self.driver.getImage()
+        cv2_img, timestamp, ret, msg = self.driver.getImage()
         stop = time.time()
         #print('GI: ', stop - start)
         if ret is False:
@@ -288,13 +336,17 @@ class GenicamCameraNode:
         else:
             ros_timestamp = rospy.Time.now()
 
-        # Make a copy for the bw thread to use rather than grabbing a new frame
+        # Apply controls
+        if self.current_controls.get("controls_enable") and cv2_img is not None:
+          cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
+
+        # Make a copy for the bw thread to use rather than grabbing a new cv2_img
         if self.bw_image_acquisition_running:
-            self.cached_2d_color_frame = frame
+            self.cached_2d_color_frame = cv2_img
             self.cached_2d_color_frame_timestamp = ros_timestamp
 
         self.img_lock.release()
-        return ret, msg, frame, ros_timestamp
+        return ret, msg, cv2_img, ros_timestamp
     
     def stopColorImg(self):
         self.img_lock.acquire()
@@ -326,31 +378,34 @@ class GenicamCameraNode:
         # both image streams are running
         if self.color_image_acquisition_running is False or self.cached_2d_color_frame is None:
             #rospy.logwarn("Debugging: getBWImg acquiring")
-            frame, timestamp, ret, msg = self.driver.getImage()
+            cv2_img, timestamp, ret, msg = self.driver.getImage()
             if timestamp is not None:
                 ros_timestamp = rospy.Time.from_sec(timestamp)
             else:
                 ros_timestamp = rospy.Time.now()
+            # Apply controls
+            if self.current_controls.get("controls_enable") and cv2_img is not None:
+                cv2_img = nepi_nex.applyIDXControls2Image(cv2_img,self.current_controls,self.current_fps)
         else:
             #rospy.logwarn("Debugging: getBWImg reusing")
-            frame = self.cached_2d_color_frame.copy()
+            cv2_img = self.cached_2d_color_frame.copy()
             ros_timestamp = self.cached_2d_color_frame_timestamp
             self.cached_2d_color_frame = None # Clear it to avoid using it multiple times in the event that threads are running at different rates
             self.cached_2d_color_frame_timestamp = None
             ret = True
-            msg = "Success: Reusing cached frame"
+            msg = "Success: Reusing cached cv2_img"
 
         self.img_lock.release()
 
         # Abort if there was some error or issue in acquiring the image
-        if ret is False or frame is None:
+        if ret is False or cv2_img is None:
             return False, msg, None, None
 
         # Fix the channel count if necessary
-        if frame.ndim == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if cv2_img.ndim == 3:
+            cv2_img = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2GRAY)
         
-        return ret, msg, frame, ros_timestamp
+        return ret, msg, cv2_img, ros_timestamp
     
     def stopBWImg(self):
         self.img_lock.acquire()
