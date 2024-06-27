@@ -32,60 +32,13 @@ def DBG_PRINT(*args, **kwargs):
 ################### Genicam Driver Configuration #########################
 ##########################################################################
 GENICAM_GENERIC_DRIVER_ID = 'GenericGenicam'
-GENICAM_IDS_UEYE_DRIVER_ID = 'IDS_uEye'
-GENICAM_FLIR_BLACKFLY_S_DRIVER_ID = 'FLIR_Blackfly_S'
 
 DEFAULT_GENTL_PATHS = [
     '/opt/baumer/gentl_producers/libbgapi2_usb.cti.2.14.1',
     '/opt/baumer/gentl_producers/libbgapi2_gige.cti.2.14.1'
 ]
 
-MODEL_TO_DRIVER_MAPPING = {
-    "GV-528xFA-C" : GENICAM_IDS_UEYE_DRIVER_ID,
-    "U3-328xCP-C" : GENICAM_IDS_UEYE_DRIVER_ID,
-    "Blackfly S BFS-PGE-31S4C" : GENICAM_FLIR_BLACKFLY_S_DRIVER_ID,
-}
 
-# This collection of parameter dictionaries provides per-device differentiation of IDX settings
-# Parent can override these values by passing in a dictionary to this class's constructor as the 
-# param_mapping_overrides arg
-GENICAM_PARAM_MAPPING = {
-    GENICAM_GENERIC_DRIVER_ID : {
-        "contrast" : {
-            "genicam_name" : "BlackLevel",
-            "inverted" : False
-        },
-        "brightness" : {
-            "genicam_name" : "Gamma",
-            "inverted" : True
-        },
-    },
-    GENICAM_IDS_UEYE_DRIVER_ID : {
-        "contrast" : {
-            "genicam_name" : "BlackLevel",
-            "inverted" : False
-        },
-        "brightness" : {
-            "genicam_name" : "Gamma",
-            "inverted" : False,
-        },
-        "thresholding" : {
-            "genicam_name" : "Gain",
-            "inverted" : False
-        }
-    },
-    GENICAM_FLIR_BLACKFLY_S_DRIVER_ID : {
-        "contrast" : {
-            "genicam_name" : "BlackLevel",
-            "inverted" : False
-        },
-        # Using gamma for brightness is leading to a hazy image for Blackfly, so disabled by default for now
-        #"brightness" : {
-        #    "genicam_name" : "Gamma",
-        #    "inverted" : True
-        #},
-    },
-}
 ##########################################################################
 
 DEFAULT_CAPTURE_TIMEOUT_S = 1
@@ -103,7 +56,7 @@ class GenicamCamDriver(object):
             genicam.genapi.IString: "string",
     }
 
-    def __init__(self, model=None, serial_number=None, harvester=None, gentl_paths=DEFAULT_GENTL_PATHS, param_mapping_overrides={}):
+    def __init__(self, model=None, serial_number=None, harvester=None, gentl_paths=DEFAULT_GENTL_PATHS):
         self.model = model
         self.serial_number = serial_number
         self.img_acq_running = False
@@ -112,12 +65,7 @@ class GenicamCamDriver(object):
         self.connected = False
         self.resolution = None
         
-        # Grab the right parameter mapping based on model name
-        driver_id = GENICAM_GENERIC_DRIVER_ID if model not in MODEL_TO_DRIVER_MAPPING else MODEL_TO_DRIVER_MAPPING[model]
-        self.param_mapping = GENICAM_PARAM_MAPPING[driver_id]
-        # And apply overrides
-        for key in param_mapping_overrides:
-            self.param_mapping[key] = param_mapping_overrides[key]
+        driver_id = GENICAM_GENERIC_DRIVER_ID
         
         DBG_PRINT(f"Initializing {self._name()}")
 
@@ -134,7 +82,6 @@ class GenicamCamDriver(object):
         if len(self.harvester.device_info_list) < 1:
             raise Exception("No genicam devices detected")
         DBG_PRINT(f"{len(self.harvester.device_info_list)} genicam devices detected")
-
         # Find and connect to the specified device.
         search_keys = dict()
         search_keys["access_status"] = genicam.gentl.DEVICE_ACCESS_STATUS_LIST.DEVICE_ACCESS_STATUS_READWRITE.value
@@ -152,22 +99,6 @@ class GenicamCamDriver(object):
         self.connected = True
         DBG_PRINT(f"Connected to {self._name()}")
         DBG_PRINT("Discovering camera controls")
-
-        # Enable frame rate adjustment, if present.
-        try:
-            self.device.remote_device.node_map.\
-                    __getattr__("AcquisitionFrameRateEnable").value = True
-            DBG_PRINT("Set AcquisitionFrameRateEnable to True")
-        except AttributeError:
-            DBG_PRINT("No AcquisitionFrameRateEnable node")
-
-        # Enable gamma adjustment, if present.
-        try:
-            self.device.remote_device.node_map.\
-                    __getattr__("GammaEnable").value = True
-            DBG_PRINT("Set GammaEnable to True")
-        except AttributeError:
-            DBG_PRINT("No GammaEnable node")
 
         ret, msg = self.initCameraControlsDict()
         if not ret:
@@ -192,7 +123,7 @@ class GenicamCamDriver(object):
 
         try:
             DBG_PRINT(f"Attempting to set node {name} to {val}...")
-            self.camera_controls[name]["node"].value = val
+            self.camera_settings[name]["node"].value = val
         except KeyError:
             ret, msg = False, f"Node does not exist (set {name} {val})"
         except genicam.genapi.AccessException:
@@ -231,7 +162,7 @@ class GenicamCamDriver(object):
     def _getNodeVal(self, name):
         ret = None
         try:
-            ret = self.camera_controls[name]["node"].value
+            ret = self.camera_settings[name]["node"].value
         except KeyError:
             return ret, f"Node does not exist (get {name})"
         except genicam.genapi.AccessException:
@@ -246,6 +177,7 @@ class GenicamCamDriver(object):
     def initCameraControlsDict(self):
         if not self.isConnected():
             raise RuntimeError("Must connect before initializing camera controls")
+        self.camera_settings = dict()
         self.camera_controls = dict()
         node_names = [n for n in self.device.remote_device.node_map.__dir__() if n[0].isupper()]
         for node_name in node_names:
@@ -258,7 +190,7 @@ class GenicamCamDriver(object):
             entry["readable"] = access_mode in (EAccessMode.RO, EAccessMode.RW)
             entry["writable"] = access_mode in (EAccessMode.WO, EAccessMode.RW)
             entry["type"] = self.NODE_TYPE_MAP[type(node)]
-            if entry["readable"]:
+            if (entry["readable"]):
                 if entry["type"] == "bool":
                     pass # Nothing to do here but store it.
                 elif entry["type"] == "category":
@@ -269,7 +201,6 @@ class GenicamCamDriver(object):
                     entry["options"] = list()
                     for option in node.symbolics:
                         entry["options"].append(option)
-                    entry["value"] = node.value
                 elif entry["type"] == "float":
                     entry["min"] = node.min
                     entry["max"] = node.max
@@ -281,7 +212,17 @@ class GenicamCamDriver(object):
                     pass # Can't tell if this is useful for anything.
                 elif entry["type"] == "string":
                     pass # Nothing to do here but store it.
-            self.camera_controls[node_name] = entry
+                    
+                try:
+                    value = node.value
+                    entry["value"] = value
+                except:
+                    pass
+            self.camera_settings[node_name] = entry
+            if entry["readable"] == True and entry["writable"] == True and "value" in entry.keys():
+                self.camera_controls[node_name] = entry
+
+
 
         # Attempt to set initial resolution to whatever the current device
         # setting is. We need to do this because resolution is handled in the
@@ -293,112 +234,61 @@ class GenicamCamDriver(object):
         width, msg = self._getNodeVal("Width")
         height, msg = self._getNodeVal("Height")
         if width is None:
+            width = 0
             DBG_PRINT(f"Failed setting initial width: {msg}")
-        if height is None:
+        elif height is None:
+            height = 0
             DBG_PRINT(f"Failed setting initial height: {msg}")
-        self.setResolution({"width": width, "height": height})
-
+        #else:
+            #self.setResolution({"width": width, "height": height})
+        self.resolution = dict(width = width,height = height)
         return True, "Success"
 
     def initVideoFormatDict(self):
         pass
 
-    def getAvailableScaledCameraControls(self):
-        numeric_ctl_list = list()
-        scaled_types = ("float", "int")
-        for ctl in self.camera_controls:
-            if not self.camera_controls[ctl]["readable"]:
-                continue
-            if not self.camera_controls[ctl]["writable"]:
-                continue
-            if self.camera_controls[ctl]["type"] in scaled_types:
-                numeric_ctl_list.append(ctl)
-        return numeric_ctl_list
+    def getCameraControls(self):
+        return self.camera_controls
 
-    def getAvailableDiscreteCameraControls(self):
-        switched_ctl_dict = dict()
-        for ctl in self.camera_controls:
-            if not self.camera_controls[ctl]["readable"]:
-                continue
-            if not self.camera_controls[ctl]["writable"]:
-                continue
-            typ = self.camera_controls[ctl]["type"]
-            if typ == "bool":
-                switched_ctl_dict[ctl] = ["off", "on"]
-            elif typ == "enum":
-                switched_ctl_dict[ctl] = self.camera_controls[ctl]["options"]
-        return switched_ctl_dict
+    def setCameraControl(self, setting_name, val):
+        new_val = val
+        if not setting_name in self.camera_controls:
+            return False, "Unavailable setting: " + setting_name
+        [success,msg] = self._setNodeVal(setting_name, new_val)
+        if success:
+            [val_check,msg] = self.getCameraControl(setting_name)
+            if val_check != new_val:
+                return False, ( "Control did not update from " + str(val_check) + " to " + str(val) + " with msg " + msg + ".  May require power cycle" ) 
+        self.camera_controls[setting_name]['value'] = val # Update controls dictionary
+        return success, msg
 
-    def setScaledCameraControl(self, genicam_setting_name, scaled_val):
-        if scaled_val < 0.0 or scaled_val > 1.0:
-            return False, f"Invalid scaled value for {genicam_setting_name}"
+    def getCameraControl(self, setting_name):
+        if not setting_name in self.camera_controls:
+            return False, "Unavailable setting: " + setting_name
+        [val,msg] = self._getNodeVal(setting_name)
+        return val, msg
 
-        if genicam_setting_name not in self.camera_controls:
-            return False, f"Unavailable setting: {genicam_setting_name}"
-
-        vmax = self.camera_controls[genicam_setting_name]["max"]
-        vmin = self.camera_controls[genicam_setting_name]["min"]
-        diff = vmax - vmin
-        raw_float = vmin + (diff * scaled_val)
-
-        # If this is a float, no steps are required so we are done with calculation
-        if self.camera_controls[genicam_setting_name]["type"] == "float":
-            return self._setNodeVal(genicam_setting_name, raw_float)
-
-        # Otherwise, it's an int, so must calculate steps
-        step = self.camera_controls[genicam_setting_name]["step"] if "step" in self.camera_controls[genicam_setting_name] else 1
-        raw_step = int(round(raw_float / step)) * step
-        stepped_val = raw_step * step
-
-        return self._setNodeVal(genicam_setting_name, stepped_val)
-
-    def getScaledCameraControl(self, genicam_setting_name):
-        if genicam_setting_name not in self.camera_controls:
-            return False, f"Unavailable setting: {genicam_setting_name}"
-
-        val, msg = self._getNodeVal(genicam_setting_name)
-
-        if val is None:
-            return False, f"Failed to get value from device: {msg}"
-
-        vmin = self.camera_controls[genicam_setting_name]["min"]
-        vmax = self.camera_controls[genicam_setting_name]["max"]
-        diff = vmax - vmin
-        ret = float(val - vmin) / float(diff)
-        return ret, "Success"
-
-    def hasAdjustableCameraControl(self, genicam_setting_name):
-        if genicam_setting_name not in self.camera_controls:
+    def hasAdjustableCameraControl(self, setting_name):
+        if setting_name not in self.camera_controls:
             return False
-        return self.camera_controls[genicam_setting_name]["writable"]
+        return self.camera_controls[setting_name]["writable"]
 
     def hasAdjustableResolution(self):
         # TODO: Maybe resolution adjustment should be based on "Binning" or "Decimation" controls, not in s/w via cv2.resize()
-        if "Height" not in self.camera_controls or "Width" not in self.camera_controls:
+        if "Height" not in self.camera_settings or "Width" not in self.camera_settings:
             return False
         if self.resolution["width"] is None or self.resolution["height"] is None:
             return False
-        return self.camera_controls["Height"]["writable"] and \
-                self.camera_controls["Width"]["writable"]
+        return self.camera_settings["Height"]["writable"] and \
+                self.camera_settings["Width"]["writable"]
 
     def hasAdjustableFramerate(self):
-        if "AcquisitionFrameRate" not in self.camera_controls:
+        if "AcquisitionFrameRate" not in self.camera_settings:
             return False
-        if not self.camera_controls["AcquisitionFrameRate"]["writable"]:
+        if not self.camera_settings["AcquisitionFrameRate"]["writable"]:
             return False
         return True
-    
-    def hasAdjustableRatioSetting(self, setting):
-        if setting not in self.param_mapping:
-            return False
-        
-        genicam_name = self.param_mapping[setting]["genicam_name"]
-        if genicam_name not in self.camera_controls:
-            return False
-        if not self.camera_controls[genicam_name]["writable"]:
-            return False
-        
-        return True
+
     
     def getCurrentVideoSettings(self):
         video_settings_dict = dict()
@@ -421,10 +311,10 @@ class GenicamCamDriver(object):
     def setResolution(self, resolution_dict):
         # TODO: Maybe resolution adjustment should be based on "Binning" or "Decimation" controls, not in s/w via cv2.resize()
         DBG_PRINT(f"setResolution {resolution_dict}")
-        width_too_small = resolution_dict["width"] < self.camera_controls["Width"]["min"]
-        width_too_large = resolution_dict["width"] > self.camera_controls["Width"]["max"]
-        height_too_small = resolution_dict["height"] < self.camera_controls["Height"]["min"]
-        height_too_large = resolution_dict["height"] > self.camera_controls["Height"]["max"]
+        width_too_small = resolution_dict["width"] < self.camera_settings["Width"]["min"]
+        width_too_large = resolution_dict["width"] > self.camera_settings["Width"]["max"]
+        height_too_small = resolution_dict["height"] < self.camera_settings["Height"]["min"]
+        height_too_large = resolution_dict["height"] > self.camera_settings["Height"]["max"]
         if width_too_small or width_too_large or height_too_small or height_too_large:
             return False, "Requested resolution is not available"
         self.resolution = resolution_dict
@@ -433,8 +323,8 @@ class GenicamCamDriver(object):
     def getCurrentResolutionAvailableFramerates(self):
         NUM_OPTIONS = 20
         available_framerates = [x for x in np.linspace(
-            self.camera_controls["AcquisitionFrameRate"]["min"],
-            self.camera_controls["AcquisitionFrameRate"]["max"],
+            self.camera_settings["AcquisitionFrameRate"]["min"],
+            self.camera_settings["AcquisitionFrameRate"]["max"],
             NUM_OPTIONS
         )]
         DBG_PRINT(available_framerates)
@@ -443,14 +333,14 @@ class GenicamCamDriver(object):
     def setFramerate(self, max_fps):
         if not self.hasAdjustableFramerate():
             return False, "Framerate is not adjustable"
-        fps_too_low = max_fps < self.camera_controls["AcquisitionFrameRate"]["min"]
-        fps_too_high = max_fps > self.camera_controls["AcquisitionFrameRate"]["max"]
+        fps_too_low = max_fps < self.camera_settings["AcquisitionFrameRate"]["min"]
+        fps_too_high = max_fps > self.camera_settings["AcquisitionFrameRate"]["max"]
         if fps_too_low or fps_too_high:
             return False, "Invalid framerate requested"
         return self._setNodeVal("AcquisitionFrameRate", max_fps)
 
     def getFramerate(self):
-        if "AcquisitionFrameRate" not in self.camera_controls:
+        if "AcquisitionFrameRate" not in self.camera_settings:
             return False, "Camera does not provide framerate information"
         return self._getNodeVal("AcquisitionFrameRate")
 
@@ -461,12 +351,12 @@ class GenicamCamDriver(object):
         # NOTE: clamp resolution between 240x320 to 1080x1920
         # FIXME: move this to config
         NUM_OPTIONS = 4
-        min_height = max(self.camera_controls["Height"]["min"], 240)
-        min_width = max(self.camera_controls["Width"]["min"], 320)
-        max_height = min(self.camera_controls["Height"]["max"], 1080)
-        max_width = min(self.camera_controls["Width"]["max"], 1920)
-        height_step = self.camera_controls["Height"]["step"]
-        width_step = self.camera_controls["Width"]["step"]
+        min_height = max(self.camera_settings["Height"]["min"], 240)
+        min_width = max(self.camera_settings["Width"]["min"], 320)
+        max_height = min(self.camera_settings["Height"]["max"], 1080)
+        max_width = min(self.camera_settings["Width"]["max"], 1920)
+        height_step = self.camera_settings["Height"]["step"]
+        width_step = self.camera_settings["Width"]["step"]
         heights = [int(x) for x in np.linspace(min_height, max_height, NUM_OPTIONS)]
         widths = [int(x) for x in np.linspace(min_width, max_width, NUM_OPTIONS)]
         heights[0] += (height_step - (heights[0] % height_step))
@@ -476,39 +366,6 @@ class GenicamCamDriver(object):
             widths[i] -= (widths[i] % width_step)
         return True, [{"height": h, "width": w} for (h, w) in zip(heights, widths)]
     
-    def getScaledControl(self, control_name):
-        if control_name not in self.param_mapping:
-            return 0.0
-        
-        genicam_name = self.param_mapping[control_name]["genicam_name"]
-        return self.getScaledCameraControl(genicam_name)
-
-    def setScaledControl(self, control_name, scaled_val):
-        if control_name not in self.param_mapping:
-            return 0.0
-        
-        genicam_name = self.param_mapping[control_name]["genicam_name"]
-        inverted = self.param_mapping[control_name]["inverted"]
-        scaled = scaled_val if inverted is False else (1.0 - scaled_val)
-        return self.setScaledCameraControl(genicam_name, scaled)
-    
-    def getScaledContrast(self):
-        return self.getScaledControl("contrast")
-   
-    def setScaledContrast(self, ratio):
-        return self.setScaledControl("contrast", ratio)
-        
-    def getScaledBrightness(self):
-        return self.getScaledControl("brightness")
-        
-    def setScaledBrightness(self, ratio):
-        return self.setScaledControl("brightness", ratio)
-    
-    def getScaledThresholding(self):
-        return self.getScaledControl("thresholding")
-    
-    def setScaledThresholding(self, ratio):
-        return self.setScaledControl("thresholding", ratio)
     
     def imageAcquisitionRunning(self):
         return self.img_acq_running
@@ -618,14 +475,14 @@ def test_genicam_cam_driver(model, serial_number, harvester, test_camera_control
         cam.stopImageAcquisition()
         cam.device.destroy()
     if dump_lut:
-        cam.camera_controls["lutenable"]["node"].value = True
+        cam.camera_settings["lutenable"]["node"].value = True
         cam._setNodeVal("LUTEnable", True)
-        imin = cam.camera_controls["lutindex"]["min"]
-        imax = cam.camera_controls["lutindex"]["max"]
+        imin = cam.camera_settings["lutindex"]["min"]
+        imax = cam.camera_settings["lutindex"]["max"]
         print("Dumping contents of LUT...")
         for i in range(imin, imax + 1):
-            cam.camera_controls["lutindex"] = i
-            val = cam.camera_controls["lutvalue"]["node"].value
+            cam.camera_settings["lutindex"] = i
+            val = cam.camera_settings["lutvalue"]["node"].value
             print(f"{i}: {val}")
         print("Done.")
 
